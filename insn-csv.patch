@@ -1,0 +1,131 @@
+diff --git a/target/riscv/cpu.c b/target/riscv/cpu.c
+index 522d6584e4..1843334bdf 100644
+--- a/target/riscv/cpu.c
++++ b/target/riscv/cpu.c
+@@ -38,6 +38,8 @@
+ #include "kvm/kvm_riscv.h"
+ #include "tcg/tcg-cpu.h"
+ #include "tcg/tcg.h"
++#include <stdio.h>
++#include <stdlib.h>
+ 
+ /* RISC-V CPU definitions */
+ static const char riscv_single_letter_exts[] = "IEMAFDQCBPVH";
+@@ -55,6 +57,50 @@ const uint32_t misa_bits[] = {RVI, RVE, RVM, RVA, RVF, RVD, RVV,
+ #define BYTE(x)   (x)
+ #endif
+ 
++#define MAX_FIELDS 128
++static void parse_custom_csv_file(CPURISCVState *env, const char *filepath)
++{
++   FILE *file = fopen(filepath, "r");
++   if (!file) {
++	error_report("Failed to open custom CSV file: %s", filepath);
++	exit(EXIT_FAILURE);
++   }
++   int capacity = 32;
++   env->csv_data_array = g_new(uint32_t, capacity);
++   env->csv_data_count = 0;
++
++   char line[256];
++   while (fgets(line, sizeof(line), file)) {
++
++	// remove trailing newline
++	size_t len = strlen(line);
++	if (len > 0 && (line[len - 1] == '\n' || line[len -1] =='\r'))
++		line[--len] = '\0';
++
++	char *token = strtok(line, ",");
++	while (token) {
++		if (env->csv_data_count >= capacity) {
++			capacity *= 2;
++			env->csv_data_array = g_renew(uint32_t, env->csv_data_array, capacity);
++		}
++		env->csv_data_array[env->csv_data_count++] = (uint32_t) strtoul(token, NULL, 16);
++		token = strtok(NULL, ",");
++	}
++   }
++   fclose(file);
++}
++
++static void riscv_cpu_realizefn(DeviceState *dev, Error **errp)
++{
++   RISCVCPU *cpu = RISCV_CPU(dev);
++   CPURISCVState *env = &cpu->env;
++   //Error **local_err = NULL;
++   if (cpu->csv_filepath_cfg) {
++	env->csv_filename = g_strdup(cpu->csv_filepath_cfg);
++	parse_custom_csv_file(env, env->csv_filename);
++   }
++}
++
+ bool riscv_cpu_is_32bit(RISCVCPU *cpu)
+ {
+     return riscv_cpu_mxl(&cpu->env) == MXL_RV32;
+@@ -1308,6 +1354,7 @@ static void riscv_cpu_realize(DeviceState *dev, Error **errp)
+     cpu_reset(cs);
+ 
+     mcc->parent_realize(dev, errp);
++    riscv_cpu_realizefn(dev, errp);
+ }
+ 
+ bool riscv_cpu_accelerator_compatible(RISCVCPU *cpu)
+@@ -2951,6 +2998,8 @@ static const Property riscv_cpu_properties[] = {
+      * it with -x and default to 'false'.
+      */
+     DEFINE_PROP_BOOL("x-misa-w", RISCVCPU, cfg.misa_w, false),
++    DEFINE_PROP_STRING("csv-file", RISCVCPU, csv_filepath_cfg),
++    //DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+ #if defined(TARGET_RISCV64)
+diff --git a/target/riscv/cpu.h b/target/riscv/cpu.h
+index 616c3bdc1c..b67f196580 100644
+--- a/target/riscv/cpu.h
++++ b/target/riscv/cpu.h
+@@ -500,6 +500,12 @@ struct CPUArchState {
+     target_ulong rnmip;
+     uint64_t rnmi_irqvec;
+     uint64_t rnmi_excpvec;
++//#ifdef CONFIG_EMUINSTN_INJ
++    /* custom instn trace csv config */
++    char *csv_filename;
++    uint32_t *csv_data_array;
++    int csv_data_count;
++//#endif
+ };
+ 
+ /*
+@@ -525,6 +531,7 @@ struct ArchCPU {
+     /* Mapping of events to counters */
+     GHashTable *pmu_event_ctr_map;
+     const GPtrArray *decoders;
++    char *csv_filepath_cfg;
+ };
+ 
+ /**
+diff --git a/target/riscv/op_helper.c b/target/riscv/op_helper.c
+index f156bfab12..b7cffc9a8e 100644
+--- a/target/riscv/op_helper.c
++++ b/target/riscv/op_helper.c
+@@ -481,7 +481,19 @@ target_ulong helper_mnret(CPURISCVState *env)
+ void helper_ctr_add_entry(CPURISCVState *env, target_ulong src,
+                           target_ulong dest, target_ulong type)
+ {
+-    riscv_ctr_add_entry(env, src, dest, (enum CTRType)type,
++    int i = 0;
++    bool found = false;
++
++    for (i=0; i < env->csv_data_count; i++)
++	if (env->pc != 0 && 
++		env->pc != 1 && 
++		   env->csv_data_array[i] == env->pc) {
++		found = true;
++		break;
++	}
++    /* only record ctr found in instrace.csv */
++    if (found)   
++    	riscv_ctr_add_entry(env, src, dest, (enum CTRType)type,
+                         env->priv, env->virt_enabled);
+ }
+ 
