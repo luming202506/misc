@@ -1,0 +1,86 @@
+diff --git a/target/riscv/cpu.c b/target/riscv/cpu.c
+index 1843334bdf..4ed5c39dac 100644
+--- a/target/riscv/cpu.c
++++ b/target/riscv/cpu.c
+@@ -66,8 +66,9 @@ static void parse_custom_csv_file(CPURISCVState *env, const char *filepath)
+ 	exit(EXIT_FAILURE);
+    }
+    int capacity = 32;
+-   env->csv_data_array = g_new(uint32_t, capacity);
++   env->csv_data_array = g_new(uint64_t, capacity);
+    env->csv_data_count = 0;
++   env->csv_table = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
+ 
+    char line[256];
+    while (fgets(line, sizeof(line), file)) {
+@@ -79,12 +80,24 @@ static void parse_custom_csv_file(CPURISCVState *env, const char *filepath)
+ 
+ 	char *token = strtok(line, ",");
+ 	while (token) {
++		uint64_t keyvalue;
+ 		if (env->csv_data_count >= capacity) {
+ 			capacity *= 2;
+-			env->csv_data_array = g_renew(uint32_t, env->csv_data_array, capacity);
++			env->csv_data_array = g_renew(uint64_t, env->csv_data_array, capacity);
+ 		}
+-		env->csv_data_array[env->csv_data_count++] = (uint32_t) strtoul(token, NULL, 16);
++		keyvalue = (uint64_t) strtoull(token, NULL, 16);
++		env->csv_data_array[env->csv_data_count] = keyvalue;
++		if (keyvalue == 0)
++			goto nextt;
++		gpointer vv = g_hash_table_lookup(env->csv_table, &keyvalue);
++		if (vv == NULL) {
++			long *key2 = g_new(long, keyvalue);
++			long *value2 = g_new(long, 0);
++			g_hash_table_insert(env->csv_table, key2, value2/*unused*/);
++		}
++nextt:
+ 		token = strtok(NULL, ",");
++		env->csv_data_count++;
+ 	}
+    }
+    fclose(file);
+diff --git a/target/riscv/cpu.h b/target/riscv/cpu.h
+index b67f196580..dbb0b77a47 100644
+--- a/target/riscv/cpu.h
++++ b/target/riscv/cpu.h
+@@ -503,8 +503,9 @@ struct CPUArchState {
+ //#ifdef CONFIG_EMUINSTN_INJ
+     /* custom instn trace csv config */
+     char *csv_filename;
+-    uint32_t *csv_data_array;
++    uint64_t *csv_data_array;
+     int csv_data_count;
++    GHashTable *csv_table;
+ //#endif
+ };
+ 
+diff --git a/target/riscv/op_helper.c b/target/riscv/op_helper.c
+index b7cffc9a8e..07921be3d1 100644
+--- a/target/riscv/op_helper.c
++++ b/target/riscv/op_helper.c
+@@ -481,9 +481,9 @@ target_ulong helper_mnret(CPURISCVState *env)
+ void helper_ctr_add_entry(CPURISCVState *env, target_ulong src,
+                           target_ulong dest, target_ulong type)
+ {
+-    int i = 0;
+-    bool found = false;
+-
++#if 0 /*too ugly and naive */
++    int i=0;
++    bool found=false;
+     for (i=0; i < env->csv_data_count; i++)
+ 	if (env->pc != 0 && 
+ 		env->pc != 1 && 
+@@ -491,8 +491,10 @@ void helper_ctr_add_entry(CPURISCVState *env, target_ulong src,
+ 		found = true;
+ 		break;
+ 	}
++#endif
++    gpointer value = g_hash_table_lookup(env->csv_table,(void *) &env->pc);
+     /* only record ctr found in instrace.csv */
+-    if (found)   
++    if (value != NULL)   
+     	riscv_ctr_add_entry(env, src, dest, (enum CTRType)type,
+                         env->priv, env->virt_enabled);
+ }
